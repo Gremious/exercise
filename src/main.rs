@@ -49,7 +49,7 @@ impl Transaction {
 
 	pub fn record(&self) -> anyhow::Result<()> {
 		TRANSACTIONS.write()
-			.and_then(|mut x| Ok(x.insert(self.tx, self.clone())))
+			.map(|mut x| x.insert(self.tx, self.clone()))
 			.map_err(|e| anyhow::anyhow!(format!("Error adding transaction: {e}")))?;
 		Ok(())
 	}
@@ -88,7 +88,7 @@ impl Account {
 		self.available += amount;
 		self.total += amount;
 
-		return Ok(());
+		Ok(())
 	}
 
 	fn withdraw(&mut self, transaction: &Transaction) -> anyhow::Result<()>{
@@ -210,14 +210,12 @@ fn main_loop(file_path: &str) -> anyhow::Result<HashMap<u16, Account>> {
 		.from_reader(buffer);
 
 	for transaction in reader.deserialize::<Transaction>() {
-		let Ok(transaction @ Transaction { kind, client, amount, .. }) = transaction else {
+		let Ok(transaction @ Transaction { kind, client, .. }) = transaction else {
 			eprintln!("Broken record: {transaction:?}");
 			continue;
 		};
 
-		let entry = accounts
-			.entry(client)
-			.or_insert(Account::default());
+		let entry = accounts.entry(client).or_default();
 
 		match kind {
 			// Safe unwraps
