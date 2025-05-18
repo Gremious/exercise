@@ -114,12 +114,17 @@ fn main() -> anyhow::Result<()> {
 	let Some(input_file_path) = arg else {
 		anyhow::bail!("No input.");
 	};
-	println!("args: {input_file_path:#?}");
+
+	let _ = main_loop(&input_file_path)?;
+
+	Ok(())
+}
+
+fn main_loop(file_path: &str) -> anyhow::Result<HashMap<u16, Account>> {
+	let file = File::open(file_path)?;
+	let buffer = BufReader::new(file);
 
 	let mut accounts: HashMap<u16, Account> = HashMap::new();
-
-	let file = File::open(input_file_path)?;
-	let buffer = BufReader::new(file);
 
 	// NOTE: Your example in the pdf is comma AND space delimited
 	// which I don't believe is supported by the csv crate currently
@@ -159,15 +164,26 @@ fn main() -> anyhow::Result<()> {
 		}
 	}
 
-	Ok(())
+	Ok(accounts)
 }
 
+// Lazy tests
 #[cfg(test)]
 mod test {
-	use super::*;
+	use rust_decimal::dec;
 
+use super::*;
 	#[test]
 	fn simple_deposit_withdraw() {
+		let accounts = main_loop("./csvs/deposit_withdraw.csv");
+		let (_, account) = accounts.as_ref().unwrap().iter().next().unwrap();
+		assert_eq!(account.available, dec!(0));
+	}
 
+	#[test]
+	fn bad_withdrawal() {
+		let accounts = main_loop("./csvs/bad_withdraw.csv");
+		let (_, account) = accounts.as_ref().unwrap().iter().next().unwrap();
+		assert_eq!(account.available, dec!(2));
 	}
 }
