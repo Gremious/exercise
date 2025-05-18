@@ -1,31 +1,35 @@
+## Basics
+All OK.
+
+## Completeness
+All cases covered.
+
+## Correctness
+Simple test csv's included in the repo under `csvs/`.
+
+Unit tests can be ran with `cargo --test` over them.
+
+> Or are you using the type system to ensure correctness?
+
+It's rust 👍️
 
 ## Safety and Robustness
-> Are you doing something dangerous? Tell us why you chose to do it this way. How are you handling errors?
+> Are you doing something dangerous?
+
+Not really.
+All unwraps are reasonable for the purpouses of an exercise (i.e. the static hashmap should always exist.).
+
+> How are you handling errors?
+
+Very generously, everything bails, but if any record has an error, we continue to the next one.
+
+## Efficiency
+
+> Can you stream values through memory as opposed to loading the entire data set upfront?
+
+I'm using a `BufReader` and checking on the csv library, to the best of my understanding it's using an interator that reads record-by-record, so should be ok.
 
 
-I was going to write some tests like:
+## Maintainability
 
-```rust
-#[cfg(test)]
-pub mod tests {
-	use super::*;
-
-	#[test]
-	fn can_parse_decimals() {
-		assert!(Decimal::from_f64(-1.00000000000000000001).is_some());
-		assert!(Decimal::from_f64(0.99999999999999).is_some());
-		assert!(Decimal::from_f64(f64::EPSILON).is_some());
-		assert!(Decimal::from_f64(f64::NAN).is_none());
-	}
-
-	#[test]
-	fn can_round_decimals() {
-		assert_eq!(dec!(1.1000), Decimal::from_f64(1.1).unwrap().round_dp(4));
-		assert_eq!(dec!(-1), Decimal::from_f64(-1.00000000000000000099).unwrap().round_dp(4));
-		assert_eq!(dec!(1), Decimal::from_f64(0.99999999999999).unwrap().round_dp(4));
-	}
-}
-```
-
-But like. If you care about that - pull rust-csv as a dependency, and run it's tests.
-There's no need to rewrite their tests but worse.
+I tried to keep it simple as usual 👍️

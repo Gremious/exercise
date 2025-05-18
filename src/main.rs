@@ -1,5 +1,6 @@
 use std::{env, fs::File, io::BufReader, sync::{LazyLock, RwLock}};
 use std::collections::HashMap;
+use csv::WriterBuilder;
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 
 // For the exercise: A static hashmap, because we don't need much more
@@ -64,16 +65,14 @@ enum TransactionKind {
 	Chargeback,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 struct Account {
 	// You *should* probably have this in the account,
 	// but you don't need to for this example
 	// client_id: u16,
 	available: Decimal,
-
-	/// Total - available
 	held: Decimal,
-
+	total: Decimal,
 	locked: bool,
 }
 
@@ -87,6 +86,8 @@ impl Account {
 		if let Err(e) = transaction.record() { anyhow::bail!("Could not save transaction!! {e:?}"); };
 
 		self.available += amount;
+		self.total += amount;
+
 		return Ok(());
 	}
 
@@ -104,6 +105,8 @@ impl Account {
 		if let Err(e) = transaction.record() { anyhow::bail!(e); };
 
 		self.available -= amount;
+		self.total -= amount;
+
 		Ok(())
 	}
 
@@ -168,6 +171,7 @@ impl Account {
 		let Ok(amount) = maybe_amount else { anyhow::bail!(maybe_amount.unwrap_err()) };
 
 		self.held -= amount;
+		self.total -= amount;
 		self.locked = true;
 
 		Ok(())
@@ -177,7 +181,16 @@ impl Account {
 fn main() -> anyhow::Result<()> {
 	let Some(input_file_path) = env::args().nth(1) else { anyhow::bail!("No input."); };
 
-	let _ = main_loop(&input_file_path)?;
+	let accounts = main_loop(&input_file_path)?;
+
+    let mut writer = WriterBuilder::new()
+		.has_headers(true)
+		.flexible(true)
+		.from_writer(std::io::stdout());
+
+	for account in accounts.values() {
+		writer.serialize(account).unwrap();
+	}
 
 	Ok(())
 }
@@ -206,8 +219,6 @@ fn main_loop(file_path: &str) -> anyhow::Result<HashMap<u16, Account>> {
 			.entry(client)
 			.or_insert(Account::default());
 
-		println!("{entry:?}");
-
 		match kind {
 			// Safe unwraps
 			TransactionKind::Deposit => {
@@ -231,8 +242,6 @@ fn main_loop(file_path: &str) -> anyhow::Result<HashMap<u16, Account>> {
 				if let Err(e) = res { eprintln!("{e}"); continue; }
 			},
 		}
-
-		println!("Client {client}, {kind:?} of amount: {amount:?}");
 	}
 
 	Ok(accounts)
