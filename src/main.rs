@@ -2,8 +2,7 @@ use std::{env, fs::File, io::BufReader, sync::{LazyLock, RwLock}};
 use std::collections::HashMap;
 use rust_decimal::{prelude::FromPrimitive, Decimal};
 
-// For the exercise: An in memory static hashmap, because we don't need more
-// (If anything, I think we only need "tx" -> "amount" + "deposit or withdrawal" to be more efficient)
+// For the exercise: A static hashmap, because we don't need much more
 // for real world: probably a database, with proper sync impl
 static TRANSACTIONS: LazyLock<RwLock<HashMap<u32, Transaction>>> = LazyLock::new(Default::default);
 
@@ -13,24 +12,38 @@ struct Transaction {
 	#[serde(rename = "type")]
 	kind: TransactionKind,
 	client: u16,
-	/// Globally unique id
 	tx: u32,
 	amount: Option<f64>,
+	#[serde(skip)]
+	under_dispute: bool,
 }
 
 impl Transaction {
-	pub fn amount(&self) -> anyhow::Result<Option<Decimal>> {
-		if let Some(amount) = self.amount {
-			if !amount.is_finite() {
-				anyhow::bail!("Bad amount: {self:#?}");
+	/// If transaction has an amount -> returns just it
+	/// else we have a dispute/resolve/charback
+	/// so we return the amount for it + the original transaction
+	pub fn amount(&self) -> anyhow::Result<Decimal> {
+		let amount = match self.amount {
+			Some(amount) => {
+				// Idk if ur gonna feed it bad data in ur tests so I'm being cautious
+				if !amount.is_finite() { anyhow::bail!("Bad amount"); }
+				amount
 			}
-		}
+			None => {
+				let res = TRANSACTIONS.read().unwrap();
+
+				let Some(Some(amount)) = res.get(&self.tx).map(|tx| tx.amount) else {
+					anyhow::bail!("Missing tx/amount");
+				};
+
+				amount
+			}
+		};
 
 		// round_dp defaults to banker's rounding
-		Ok(self.amount
-			.map(Decimal::from_f64).flatten()
-			.and_then(|x| Some(x.round_dp(4))))
-
+		Decimal::from_f64(amount)
+			.map(|x| x.round_dp(4))
+			.ok_or_else(|| anyhow::anyhow!("Missing amount"))
 	}
 
 	pub fn record(&self) -> anyhow::Result<()> {
@@ -60,8 +73,7 @@ struct Account {
 
 	/// Total - available
 	held: Decimal,
-	/// Available + held
-	total: Decimal,
+
 	locked: bool,
 }
 
@@ -69,13 +81,10 @@ impl Account {
 	fn deposit(&mut self, transaction: &Transaction) -> anyhow::Result<()> {
 		if self.locked { return Ok(()) };
 
-		let amount = match transaction.amount() {
-			Ok(Some(amnt)) => amnt,
-			Ok(None) => anyhow::bail!("Missing amount"),
-			Err(e) => anyhow::bail!(e),
-		};
+		let maybe_amount = transaction.amount();
+		let Ok(amount) = maybe_amount else { anyhow::bail!(maybe_amount.unwrap_err()) };
 
-		if let Err(e) = transaction.record() { anyhow::bail!(e); };
+		if let Err(e) = transaction.record() { anyhow::bail!("Could not save transaction!! {e:?}"); };
 
 		self.available += amount;
 		return Ok(());
@@ -84,11 +93,8 @@ impl Account {
 	fn withdraw(&mut self, transaction: &Transaction) -> anyhow::Result<()>{
 		if self.locked { return Ok(()) };
 
-		let amount = match transaction.amount() {
-			Ok(Some(amnt)) => amnt,
-			Ok(None) => anyhow::bail!("Missing amount"),
-			Err(e) => anyhow::bail!(e),
-		};
+		let maybe_amount = transaction.amount();
+		let Ok(amount) = maybe_amount else { anyhow::bail!(maybe_amount.unwrap_err()) };
 
 		if self.available < amount {
 			eprintln!("Insufficient funds: {self:?} vs {transaction:?}");
@@ -101,19 +107,61 @@ impl Account {
 		Ok(())
 	}
 
-	fn dispute(&mut self, tx: u32) {
+	fn dispute(&mut self, transaction: &Transaction) -> anyhow::Result<()> {
+		if self.locked { return Ok(()) };
 
+		// The task mentions that disputes should decrease the amount,
+		// regardless if it's disputing a deposit or a withdrawal
+		// That makes life easier, so we'll do that
+
+		let maybe_amount = transaction.amount();
+		let Ok(amount) = maybe_amount else { anyhow::bail!(maybe_amount.unwrap_err()) };
+
+		let mut reference = TRANSACTIONS.write().unwrap();
+		let Some(reference) = reference.get_mut(&transaction.tx) else {
+			anyhow::bail!("transaction under dispute does not exist")
+		};
+
+		// Overdraft OK on dispute
+		reference.under_dispute = true;
+		self.available -= amount;
+		self.held += amount;
+
+		Ok(())
 	}
 
-	fn resolve() {}
-	fn chargeback() {}
+	fn resolve(&mut self, transaction: &Transaction) -> anyhow::Result<()> {
+		if self.locked { return Ok(()) };
+
+		let reference = TRANSACTIONS.read().unwrap();
+		let Some(reference) = reference.get(&transaction.tx) else {
+			anyhow::bail!("transaction under dispute does not exist")
+		};
+
+		if !reference.under_dispute { return Ok(()) };
+
+		// The task mentions that disputes should decrease the amount,
+		// regardless if it's disputing a deposit or a withdrawal
+		// That makes life easier, so we'll do that
+
+		let maybe_amount = transaction.amount();
+		let Ok(amount) = maybe_amount else { anyhow::bail!(maybe_amount.unwrap_err()) };
+
+		// Overdraft OK on dispute
+		self.held -= amount;
+		self.available += amount;
+
+		Ok(())
+	}
+
+	fn chargeback(&mut self) -> anyhow::Result<()> {
+		if self.locked { return Ok(()) };
+		Ok(())
+	}
 }
 
 fn main() -> anyhow::Result<()> {
-	let arg = env::args().nth(1);
-	let Some(input_file_path) = arg else {
-		anyhow::bail!("No input.");
-	};
+	let Some(input_file_path) = env::args().nth(1) else { anyhow::bail!("No input."); };
 
 	let _ = main_loop(&input_file_path)?;
 
@@ -135,12 +183,10 @@ fn main_loop(file_path: &str) -> anyhow::Result<HashMap<u16, Account>> {
 		.from_reader(buffer);
 
 	for transaction in reader.deserialize::<Transaction>() {
-		let Ok(transaction @ Transaction { kind, client, tx, amount }) = transaction else {
+		let Ok(transaction @ Transaction { kind, client, amount, .. }) = transaction else {
 			eprintln!("Broken record: {transaction:?}");
 			continue;
 		};
-
-		println!("Client {client}, {kind:?} of {amount:?}");
 
 		let entry = accounts
 			.entry(client)
@@ -158,10 +204,19 @@ fn main_loop(file_path: &str) -> anyhow::Result<HashMap<u16, Account>> {
 				let res = entry.withdraw(&transaction);
 				if let Err(e) = res { eprintln!("{e}"); continue; }
 			},
-			TransactionKind::Dispute => entry.dispute(tx),
-			TransactionKind::Resolve => todo!(),
-			TransactionKind::Chargeback => todo!(),
+			TransactionKind::Dispute => {
+				let res = entry.dispute(&transaction);
+				if let Err(e) = res { eprintln!("{e}"); continue; }
+			},
+			TransactionKind::Resolve => {
+				let res = entry.resolve(&transaction);
+				if let Err(e) = res { eprintln!("{e}"); continue; }
+			},
+			_ => continue,
+			// TransactionKind::Chargeback => todo!(),
 		}
+
+		println!("Client {client}, {kind:?} of amount: {amount:?}");
 	}
 
 	Ok(accounts)
@@ -185,5 +240,27 @@ use super::*;
 		let accounts = main_loop("./csvs/bad_withdraw.csv");
 		let (_, account) = accounts.as_ref().unwrap().iter().next().unwrap();
 		assert_eq!(account.available, dec!(2));
+	}
+
+	#[test]
+	fn simple_dispute() {
+		let accounts = main_loop("./csvs/simple_dispute.csv");
+		let (_, account) = accounts.as_ref().unwrap().iter().next().unwrap();
+		assert_eq!(account.available, dec!(0));
+		assert_eq!(account.held, dec!(5));
+	}
+
+	#[test]
+	fn simple_resolve() {
+		let accounts = main_loop("./csvs/simple_resolve.csv");
+		let (_, account) = accounts.as_ref().unwrap().iter().next().unwrap();
+		assert_eq!(account.available, dec!(0));
+		assert_eq!(account.held, dec!(0));
+	}
+
+	#[test]
+	fn large() {
+		let accounts = main_loop("./csvs/large.csv");
+		assert!(accounts.is_ok_and(|x| !x.is_empty()));
 	}
 }
