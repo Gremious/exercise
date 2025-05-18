@@ -154,8 +154,22 @@ impl Account {
 		Ok(())
 	}
 
-	fn chargeback(&mut self) -> anyhow::Result<()> {
+	fn chargeback(&mut self, transaction: &Transaction) -> anyhow::Result<()> {
 		if self.locked { return Ok(()) };
+
+		let reference = TRANSACTIONS.read().unwrap();
+		let Some(reference) = reference.get(&transaction.tx) else {
+			anyhow::bail!("transaction under dispute does not exist")
+		};
+
+		if !reference.under_dispute { return Ok(()) };
+
+		let maybe_amount = transaction.amount();
+		let Ok(amount) = maybe_amount else { anyhow::bail!(maybe_amount.unwrap_err()) };
+
+		self.held -= amount;
+		self.locked = true;
+
 		Ok(())
 	}
 }
@@ -212,8 +226,10 @@ fn main_loop(file_path: &str) -> anyhow::Result<HashMap<u16, Account>> {
 				let res = entry.resolve(&transaction);
 				if let Err(e) = res { eprintln!("{e}"); continue; }
 			},
-			_ => continue,
-			// TransactionKind::Chargeback => todo!(),
+			TransactionKind::Chargeback => {
+				let res = entry.chargeback(&transaction);
+				if let Err(e) = res { eprintln!("{e}"); continue; }
+			},
 		}
 
 		println!("Client {client}, {kind:?} of amount: {amount:?}");
@@ -253,6 +269,14 @@ use super::*;
 	#[test]
 	fn simple_resolve() {
 		let accounts = main_loop("./csvs/simple_resolve.csv");
+		let (_, account) = accounts.as_ref().unwrap().iter().next().unwrap();
+		assert_eq!(account.available, dec!(0));
+		assert_eq!(account.held, dec!(0));
+	}
+
+	#[test]
+	fn simple_chargeback() {
+		let accounts = main_loop("./csvs/simple_chargeback.csv");
 		let (_, account) = accounts.as_ref().unwrap().iter().next().unwrap();
 		assert_eq!(account.available, dec!(0));
 		assert_eq!(account.held, dec!(0));
