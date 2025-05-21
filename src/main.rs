@@ -67,9 +67,7 @@ enum TransactionKind {
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 struct Account {
-	// You *should* probably have this in the account,
-	// but you don't need to for this example
-	// client_id: u16,
+	client: u16,
 	available: Decimal,
 	held: Decimal,
 	total: Decimal,
@@ -183,7 +181,7 @@ fn main() -> anyhow::Result<()> {
 
 	let accounts = main_loop(&input_file_path)?;
 
-    let mut writer = WriterBuilder::new()
+	let mut writer = WriterBuilder::new()
 		.has_headers(true)
 		.flexible(true)
 		.from_writer(std::io::stdout());
@@ -215,7 +213,8 @@ fn main_loop(file_path: &str) -> anyhow::Result<HashMap<u16, Account>> {
 			continue;
 		};
 
-		let entry = accounts.entry(client).or_default();
+		let entry = accounts.entry(client)
+			.or_insert_with(|| Account { client, ..Default::default() });
 
 		match kind {
 			// Safe unwraps
